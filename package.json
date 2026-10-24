@@ -1,0 +1,16 @@
+{
+  "name": "javdb-collector-userscript",
+  "version": "1.1.1",
+  "private": true,
+  "description": "JavDB all-pages magnet collector userscript",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check javdb-collector.user.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "linkedom": "0.18.14"
+  }
+}
