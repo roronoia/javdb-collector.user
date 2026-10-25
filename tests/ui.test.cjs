@@ -20,7 +20,7 @@ test('panel starts a real collector through its button and exports the requested
  assert.equal(button(ui,'start').disabled,false);button(ui,'start').click();
  await until(()=>text(ui).includes('采集完成'));
  assert.equal(button(ui,'export').disabled,false);button(ui,'export').click();
- assert.equal(downloads.length,1);assert.equal(downloads[0].text,'-------------\r\nABC-001      magnet:?xt=urn:btih:0000000000000000000000000000000000000001\r\n-------------\r\n');assert.equal(downloads[0].name,'Sample list.txt');
+ assert.equal(downloads.length,1);assert.equal(downloads[0].text,'ABC-001  magnet:?xt=urn:btih:0000000000000000000000000000000000000001\r\n');assert.equal(downloads[0].name,'Sample list.txt');
 });
 test('restored checkpoint can resume without requesting the completed list again',async()=>{
  const d=dependencies(),job=c.createJob(source,'Saved');job.nextPage=null;job.pages=[source];job.signatures=['a'];job.status='running';job.items=[{id:'a',url:origin+'/v/a',label:'A',status:'pending'}];

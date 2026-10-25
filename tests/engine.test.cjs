@@ -7,7 +7,7 @@ const origin='https://javdb.com';
 const src=origin+'/lists/sample?sort=release';
 const hash=n=>n.toString(16).padStart(40,'0');
 const uri=n=>'magnet:?xt=urn:btih:'+hash(n);
-const txt=(...ns)=>'-------------\r\n'+ns.map(n=>'未知番号      '+uri(n)+'\r\n-------------\r\n').join('');
+const txt=(...ns)=>''+ns.map(n=>'未知番号  '+uri(n)+'\r\n').join('');
 const list=(ids,next='')=>`<html><body><div class="movie-list">${ids.map(id=>`<div class="item"><a href="/v/${id}">${id}</a></div>`).join('')}</div>${next?`<nav class="pagination"><a rel="next" class="pagination-next" href="${next}">Next</a></nav>`:''}</body></html>`;
 const detail=n=>`<html><body><div class="video-detail"><h2>TEST</h2></div><div id="magnets-content">${n?`<div class="item"><div class="magnet-name"><a href="${uri(n)}"><span class="name">TEST 1080P CHS</span></a></div></div>`:'暫無磁鏈'}</div></body></html>`;
 function setup(responses,custom={}) {

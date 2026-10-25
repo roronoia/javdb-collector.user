@@ -42,7 +42,7 @@ test('validates hashes and canonicalizes equivalent hex/base32 magnets for TXT d
   assert.equal(core.magnetKey(magnet(1)+'\nother'),null);
   assert.equal(core.selectMagnet([{...candidate(1,'1080P 中字'),url:'magnet:?xt=broken'},candidate(2,'only')]).url,magnet(2));
   const job={items:[{status:'ok',magnet:{url:magnet(0)}},{status:'ok',magnet:{url:'magnet:?xt=urn:btih:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'}},{status:'none'},{status:'ok',magnet:{url:magnet(2)}}]};
-  assert.equal(core.exportText(job),'-------------\r\n未知番号      '+magnet(0)+'\r\n-------------\r\n未知番号      '+magnet(2)+'\r\n-------------\r\n');
+  assert.equal(core.exportText(job),'未知番号  '+magnet(0)+'\r\n未知番号  '+magnet(2)+'\r\n');
 });
 test('page 1 normalization preserves search, category and sort parameters', () => {
   assert.equal(core.sourceURL('https://javdb.com/rankings/movies?sort=score&page=9&t=m#top'), 'https://javdb.com/rankings/movies?sort=score&t=m');
@@ -92,9 +92,9 @@ test('unrelated empty comments do not legitimize a loading or empty movie list',
 test('explicit 900p and 960p filenames override an inaccurate site HD tag',()=>{
  for(const res of ['900p','960p']) assert.equal(core.selectMagnet([candidate(1,res+' CHS',true),candidate(2,'1080p CHS',true)]).url,magnet(2));
 });
-test('TXT preserves film codes and requested separator layout',()=>{
+test('TXT preserves film codes and one record per line without separators',()=>{
  assert.equal(core.parseList(listing(),'https://javdb.com/lists/sample').movies[0].code,'ABC-001');
- assert.equal(core.exportText({items:[{code:'ABC-001',status:'ok',magnet:{url:magnet(1)}},{code:'BBAN-612',status:'ok',magnet:{url:magnet(2)}}]}),'-------------\r\nABC-001      '+magnet(1)+'\r\n-------------\r\nBBAN-612      '+magnet(2)+'\r\n-------------\r\n');
+ assert.equal(core.exportText({items:[{code:'ABC-001',status:'ok',magnet:{url:magnet(1)}},{code:'BBAN-612',status:'ok',magnet:{url:magnet(2)}}]}),'ABC-001  '+magnet(1)+'\r\nBBAN-612  '+magnet(2)+'\r\n');
  const d=doc('<div class="video-detail"><div class="panel-block first-block"><strong>番號:</strong><span class="value"><a>ROE</a>-559</span></div></div><div id="magnets-content">暫無磁鏈</div>');
  assert.equal(core.parseDetail(d).code,'ROE-559');
 });

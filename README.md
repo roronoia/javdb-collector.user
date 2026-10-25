@@ -34,14 +34,11 @@ https://raw.githubusercontent.com/roronoia/javdb-collector.user/main/javdb-colle
 
 每部影片优先级：**高清且有中文字幕 → 高清 → 有中文字幕 → 第一条有效磁链**。磁链名称明确写出分辨率时，以名称为准，1080P 及以上算高清；否则沿用站点标签。
 
-导出格式：
+导出格式（每行一条，番号和磁链之间两个空格，不含分隔线）：
 
 ```text
--------------
-ABC-001      magnet:?xt=urn:btih:...
--------------
-BBAN-612      magnet:?xt=urn:btih:...
--------------
+ABC-001  magnet:?xt=urn:btih:...
+BBAN-612  magnet:?xt=urn:btih:...
 ```
 
 登录、年龄确认、站点验证或限流出现时会暂停，完成必要操作后继续。关闭标签页会停止采集；换域名前先暂停旧标签页。不同域名的登录状态不会跨站转发。
