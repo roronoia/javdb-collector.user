@@ -15,12 +15,29 @@ function dependencies(extra={}){
 async function until(fn){for(let i=0;i<100;i++){if(fn())return;await new Promise(r=>setImmediate(r));}throw Error('State did not settle');}
 const button=(ui,action)=>ui.host.shadowRoot.querySelector(`[data-action="${action}"]`);
 const text=ui=>ui.host.shadowRoot.querySelector('section').textContent;
-test('panel starts a real collector through its button and exports the requested numbered TXT layout',async()=>{
+test('panel exports bare magnet TXT by default and code layout when selected',async()=>{
  const {options,downloads}=dependencies();const ui=await c.mount(options);
  assert.equal(button(ui,'start').disabled,false);button(ui,'start').click();
  await until(()=>text(ui).includes('采集完成'));
  assert.equal(button(ui,'export').disabled,false);button(ui,'export').click();
- assert.equal(downloads.length,1);assert.equal(downloads[0].text,'ABC-001  magnet:?xt=urn:btih:0000000000000000000000000000000000000001\r\n');assert.equal(downloads[0].name,'Sample list.txt');
+ assert.equal(downloads.length,1);assert.equal(downloads[0].text,'magnet:?xt=urn:btih:0000000000000000000000000000000000000001\r\n');assert.equal(downloads[0].name,'Sample list.txt');
+ const format=ui.host.shadowRoot.querySelector('[data-field="format"]');format.querySelector('option[value="code"]').selected=true;button(ui,'export').click();
+ assert.equal(downloads[1].text,'ABC-001  magnet:?xt=urn:btih:0000000000000000000000000000000000000001\r\n');
+});
+test('copy button puts bare magnets on the clipboard for batch download',async()=>{
+ const copies=[];const d=dependencies({copy:async text=>copies.push(text)});const ui=await c.mount(d.options);
+ assert.equal(button(ui,'copy').disabled,true);
+ button(ui,'start').click();await until(()=>text(ui).includes('采集完成'));
+ assert.equal(button(ui,'copy').disabled,false);button(ui,'copy').click();
+ await until(()=>copies.length===1);
+ assert.equal(copies[0],'magnet:?xt=urn:btih:0000000000000000000000000000000000000001\r\n');
+ await until(()=>text(ui).includes('已复制 1 条磁链'));
+});
+test('copy failures keep the TXT export fallback visible',async()=>{
+ const d=dependencies({copy:async()=>{throw Error('剪贴板被拒绝');}});const ui=await c.mount(d.options);
+ button(ui,'start').click();await until(()=>text(ui).includes('采集完成'));
+ button(ui,'copy').click();await until(()=>text(ui).includes('复制失败'));
+ assert.match(text(ui),/剪贴板被拒绝.*导出 TXT/s);
 });
 test('restored checkpoint can resume without requesting the completed list again',async()=>{
  const d=dependencies(),job=c.createJob(source,'Saved');job.nextPage=null;job.pages=[source];job.signatures=['a'];job.status='running';job.items=[{id:'a',url:origin+'/v/a',label:'A',status:'pending'}];

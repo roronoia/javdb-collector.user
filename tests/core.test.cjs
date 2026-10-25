@@ -42,7 +42,8 @@ test('validates hashes and canonicalizes equivalent hex/base32 magnets for TXT d
   assert.equal(core.magnetKey(magnet(1)+'\nother'),null);
   assert.equal(core.selectMagnet([{...candidate(1,'1080P 中字'),url:'magnet:?xt=broken'},candidate(2,'only')]).url,magnet(2));
   const job={items:[{status:'ok',magnet:{url:magnet(0)}},{status:'ok',magnet:{url:'magnet:?xt=urn:btih:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'}},{status:'none'},{status:'ok',magnet:{url:magnet(2)}}]};
-  assert.equal(core.exportText(job),'未知番号  '+magnet(0)+'\r\n未知番号  '+magnet(2)+'\r\n');
+  assert.equal(core.exportText(job),magnet(0)+'\r\n'+magnet(2)+'\r\n');
+  assert.equal(core.exportText(job,'code'),'未知番号  '+magnet(0)+'\r\n未知番号  '+magnet(2)+'\r\n');
 });
 test('page 1 normalization preserves search, category and sort parameters', () => {
   assert.equal(core.sourceURL('https://javdb.com/rankings/movies?sort=score&page=9&t=m#top'), 'https://javdb.com/rankings/movies?sort=score&t=m');
@@ -94,9 +95,26 @@ test('explicit 900p and 960p filenames override an inaccurate site HD tag',()=>{
 });
 test('TXT preserves film codes and one record per line without separators',()=>{
  assert.equal(core.parseList(listing(),'https://javdb.com/lists/sample').movies[0].code,'ABC-001');
- assert.equal(core.exportText({items:[{code:'ABC-001',status:'ok',magnet:{url:magnet(1)}},{code:'BBAN-612',status:'ok',magnet:{url:magnet(2)}}]}),'ABC-001  '+magnet(1)+'\r\nBBAN-612  '+magnet(2)+'\r\n');
+ assert.equal(core.exportText({items:[{code:'ABC-001',status:'ok',magnet:{url:magnet(1)}},{code:'BBAN-612',status:'ok',magnet:{url:magnet(2)}}]}),magnet(1)+'\r\n'+magnet(2)+'\r\n');
+ assert.equal(core.exportText({items:[{code:'ABC-001',status:'ok',magnet:{url:magnet(1)}},{code:'BBAN-612',status:'ok',magnet:{url:magnet(2)}}]},'code'),'ABC-001  '+magnet(1)+'\r\nBBAN-612  '+magnet(2)+'\r\n');
  const d=doc('<div class="video-detail"><div class="panel-block first-block"><strong>番號:</strong><span class="value"><a>ROE</a>-559</span></div></div><div id="magnets-content">暫無磁鏈</div>');
  assert.equal(core.parseDetail(d).code,'ROE-559');
+});
+test('batch download export is one bare magnet per line, deduplicated and without film codes',()=>{
+ const job={items:[
+  {code:'ABC-001',status:'ok',magnet:{url:magnet(1)}},
+  {code:'ABC-002',status:'ok',magnet:{url:magnet(1)+'&dn=duplicate'}},
+  {code:'ABC-003',status:'failed',magnet:{url:magnet(3)}},
+  {code:'ABC-004',status:'ok',magnet:{url:magnet(4)}}
+ ]};
+ assert.equal(core.exportText(job),magnet(1)+'\r\n'+magnet(4)+'\r\n');
+ assert.equal(core.exportText({items:[]}),'');
+});
+test('clipboard fallback uses a temporary textarea and reports refused access',async()=>{
+ const makeDoc=result=>{const appended=[];const area={value:'',style:{},setAttribute(){},select(){},remove(){}};return {area,appended,doc:{createElement:()=>area,body:{appendChild:node=>appended.push(node)},execCommand:()=>result}};};
+ const ok=makeDoc(true);await core.copyText(magnet(1),ok.doc);
+ assert.equal(ok.area.value,magnet(1));assert.deepEqual(ok.appended,[ok.area]);
+ const denied=makeDoc(false);await assert.rejects(core.copyText('x',denied.doc),/剪贴板/);
 });
 test('page naming uses actual list, actor, prefix and maker name fields',()=>{
  for(const [path,html,want] of [

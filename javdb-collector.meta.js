@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         JavDB 全分页磁链采集
 // @namespace    local.javdb.collector
-// @version      1.1.2
-// @description  当前列表全分页采集，每部优选一条磁链，支持断点续采与 TXT 导出。
+// @version      1.2.0
+// @description  当前列表全分页采集，每部优选一条磁链，支持断点续采、纯磁链批量导出与一键复制。
 // @homepageURL  https://github.com/roronoia/javdb-collector.user
 // @supportURL   https://github.com/roronoia/javdb-collector.user/issues
 // @updateURL    https://raw.githubusercontent.com/roronoia/javdb-collector.user/main/javdb-collector.meta.js

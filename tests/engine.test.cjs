@@ -19,7 +19,7 @@ test('discovers all pages, deduplicates films, selects one magnet and completes 
  const {engine,requests,saved}=setup({[src]:list(['a','b'],'/lists/sample?page=2'),[origin+'/lists/sample?page=2&sort=release']:list(['b','c']),[origin+'/v/a']:detail(1),[origin+'/v/b']:detail(null),[origin+'/v/c']:detail(1)});
  const job=c.createJob(src,'Sample');await engine.run(job);
  assert.equal(job.status,'completed');assert.equal(job.pages.length,2);assert.deepEqual(job.items.map(i=>i.status),['ok','none','ok']);
- assert.equal(c.exportText(job),txt(1));assert.equal(requests.length,5);assert.equal(saved.at(-1).status,'completed');
+ assert.equal(c.exportText(job),uri(1)+'\r\n');assert.equal(c.exportText(job,'code'),txt(1));assert.equal(requests.length,5);assert.equal(saved.at(-1).status,'completed');
 });
 test('failed list page preserves next page and cannot become completed',async()=>{
  const {engine}=setup({[src]:list(['a'],'?page=2'),[origin+'/lists/sample?page=2&sort=release']:new Error('Network down')});
@@ -31,7 +31,7 @@ test('ordinary detail failure produces partial results, retry succeeds without r
  const {engine,requests}=setup(responses);const job=c.createJob(src,'Sample');await engine.run(job);
  assert.equal(job.status,'partial');assert.deepEqual(job.items.map(i=>i.status),['ok','failed']);
  responses[origin+'/v/b']=detail(2);await engine.run(job,{retryFailed:true});
- assert.equal(job.status,'completed');assert.equal(requests.filter(u=>u===origin+'/v/a').length,1);assert.equal(c.exportText(job),txt(1,2));
+ assert.equal(job.status,'completed');assert.equal(requests.filter(u=>u===origin+'/v/a').length,1);assert.equal(c.exportText(job,'code'),txt(1,2));
 });
 test('pause saves the current film, reconstructed engine resumes from checkpoint without duplicates',async()=>{
  let first;const responses={[src]:list(['a','b']),[origin+'/v/a']:()=>{first.engine.pause();return detail(1);},[origin+'/v/b']:detail(2)};
@@ -48,7 +48,7 @@ test('rate limit blocks pending film and keeps retry-after, instead of skipping 
 test('failed persistence stops requests and leaves the error visible with results retained in memory',async()=>{
  let calls=0;const {engine,requests}=setup({[src]:list(['a','b']),[origin+'/v/a']:detail(1)}, {save:async()=>{if(++calls>=3)throw Error('Quota full');}});
  const job=c.createJob(src,'Sample');await engine.run(job);
- assert.equal(job.status,'blocked');assert.match(job.error,/保存.*Quota full/);assert.deepEqual(requests,[src,origin+'/v/a']);assert.equal(c.exportText(job),txt(1));
+ assert.equal(job.status,'blocked');assert.match(job.error,/保存.*Quota full/);assert.deepEqual(requests,[src,origin+'/v/a']);assert.equal(c.exportText(job,'code'),txt(1));
 });
 test('repeated page content pauses at the unresolved page instead of claiming completion',async()=>{
  const {engine}=setup({[src]:list(['a'],'?page=2'),[origin+'/lists/sample?page=2&sort=release']:list(['a'])});

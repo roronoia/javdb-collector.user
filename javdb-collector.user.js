@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         JavDB 全分页磁链采集
 // @namespace    local.javdb.collector
-// @version      1.1.2
-// @description  当前列表全分页采集，每部优选一条磁链，支持断点续采与 TXT 导出。
+// @version      1.2.0
+// @description  当前列表全分页采集，每部优选一条磁链，支持断点续采、纯磁链批量导出与一键复制。
 // @homepageURL  https://github.com/roronoia/javdb-collector.user
 // @supportURL   https://github.com/roronoia/javdb-collector.user/issues
 // @updateURL    https://raw.githubusercontent.com/roronoia/javdb-collector.user/main/javdb-collector.meta.js
@@ -259,10 +259,27 @@
     }
     return lines;
   }
-  function exportText(job) {
+  // Default is one bare magnet URI per line so the whole TXT can be pasted into
+  // qBittorrent's "add link" box or Xunlei's batch-download dialog unchanged.
+  function exportText(job, format = 'magnet') {
     const entries = exportEntries(job);
     if (!entries.length) return '';
-    return entries.map(entry => entry.code + '  ' + entry.url).join('\r\n') + '\r\n';
+    return entries.map(entry => format === 'code' ? entry.code + '  ' + entry.url : entry.url).join('\r\n') + '\r\n';
+  }
+  async function copyText(text, doc = document) {
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      try { await navigator.clipboard.writeText(text); return; } catch (_) { /* fall back below */ }
+    }
+    const area = doc.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    doc.body.appendChild(area);
+    area.select();
+    let copied = false;
+    try { copied = typeof doc.execCommand === 'function' && !!doc.execCommand('copy'); }
+    finally { area.remove(); }
+    if (!copied) throw Error('浏览器拒绝了剪贴板访问，请改用“导出 TXT”。');
   }
 
   function pageName(doc, value) {
@@ -513,6 +530,7 @@
     const storage = options.storage || defaultStorage();
     const locks = options.locks || navigator.locks;
     const download = options.download || ((text, name) => downloadTXT(text, name, doc));
+    const copy = options.copy || (text => copyText(text, doc));
     const ask = options.confirm || (message => window.confirm(message));
     const eligible = !!doc.querySelector('.movie-list') && !/^\/v\//.test(loc.pathname);
     const currentSource = sourceURL(loc.href);
@@ -530,7 +548,7 @@
         header strong{font-size:15px}button{font:inherit;min-height:44px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;color:var(--fg);background:var(--bg);cursor:pointer}
         button:hover:enabled{border-color:var(--accent);background:#edf4ff;color:#133b76}button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #438af4;outline-offset:2px}button:disabled{opacity:.5;cursor:default}
         header button{border:0;min-width:58px}main{padding:14px 16px;max-height:min(630px,75vh);overflow:auto}p{margin:0 0 10px}.muted{color:var(--muted);font-size:12px}.source{font-weight:600;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-        .state{font-weight:650}.error{color:#a3221d;background:#fff1f0;border-radius:7px;padding:8px;white-space:pre-wrap;overflow-wrap:anywhere}.error.success{color:#17613d;background:#eaf8ef}.error:empty{display:none}.counts{font-variant-numeric:tabular-nums;font-size:13px}label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}input{font:inherit;width:100%;min-height:40px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg);margin-bottom:10px}
+        .state{font-weight:650}.error{color:#a3221d;background:#fff1f0;border-radius:7px;padding:8px;white-space:pre-wrap;overflow-wrap:anywhere}.error.success{color:#17613d;background:#eaf8ef}.error:empty{display:none}.counts{font-variant-numeric:tabular-nums;font-size:13px}label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}input,select{font:inherit;width:100%;min-height:40px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg);margin-bottom:10px}
         progress{display:block;width:100%;height:9px;margin:8px 0 12px;accent-color:var(--accent)}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.primary{background:var(--accent);border-color:var(--accent);color:#fff}.primary:hover:enabled{background:#10438f;color:#fff}
         .wide{grid-column:1/-1}details{margin-top:12px;font-size:12px}summary{cursor:pointer;min-height:32px}ul{margin:4px 0;padding-left:20px;max-height:150px;overflow:auto}li{margin:6px 0;overflow-wrap:anywhere}a{color:var(--accent);overflow-wrap:anywhere}a[hidden],main[hidden]{display:none}.foot{margin:12px 0 0;font-size:12px;color:var(--muted)}
         @media(prefers-color-scheme:dark){.panel{--bg:#192232;--fg:#f0f4fb;--muted:#b7c5db;--line:#3d4c62;--accent:#91bbff}.primary{background:#2866bf;border-color:#2866bf;color:#fff}.error{background:#472525;color:#ffc3bb}.error.success{background:#1b3e2d;color:#b4f2cd}button:hover:enabled{background:#263c5b;color:#fff}}
@@ -548,15 +566,21 @@
           <p class="error" data-field="error"></p>
           <p><a data-field="problem-link" target="_blank" rel="noopener noreferrer" hidden>打开待处理页面检查</a></p>
           <label for="collector-filename">TXT 文件名（自动使用页面名称，可修改）</label><input id="collector-filename" data-field="filename" type="text" autocomplete="off">
+          <label for="collector-format">导出格式</label><select id="collector-format" data-field="format">
+            <option value="magnet">每行一条磁链（qBittorrent / 迅雷批量下载）</option>
+            <option value="code">番号 + 磁链（每行一条，便于核对）</option>
+          </select>
           <div class="actions">
             <button type="button" data-action="start" class="primary">开始采集</button>
             <button type="button" data-action="pause" disabled>暂停</button>
             <button type="button" data-action="resume" disabled>继续采集</button>
             <button type="button" data-action="retry" disabled>重试失败项</button>
             <button type="button" data-action="export" class="wide" disabled>导出 TXT</button>
+            <button type="button" data-action="copy" class="wide" disabled>复制磁链（可直接粘贴批量下载）</button>
           </div>
           <details><summary data-field="failure-summary">问题与失败项</summary><ul data-field="failures"></ul></details>
           <p class="foot">优先：高清＋中字 → 高清 → 中字 → 第一条。名称明确时以 1080P 为高清门槛，否则用站点标签。串行请求，间隔至少 2 秒。</p>
+          <p class="foot">导出默认每行一条磁链，可直接粘贴到 qBittorrent 或迅雷批量下载。</p>
           <p class="foot" data-field="domain-status">最新地址：正在检查…</p>
           <p class="foot"><a data-field="latest-link" target="_blank" rel="noopener noreferrer" hidden></a></p>
         </main>
@@ -592,6 +616,7 @@
       button('retry').disabled = !ready || busy || !failed.length || storageBroken;
       button('export').disabled = unique === 0;
       button('export').textContent = job?.status === 'completed' ? '导出 TXT' : '导出已有结果 TXT（未完成）';
+      button('copy').disabled = unique === 0;
       field('failure-summary').textContent = `问题与失败项（${failed.length}${job?.error ? '，任务已暂停' : ''}）`;
       const failures = field('failures');
       failures.textContent = '';
@@ -681,13 +706,31 @@
     });
     button('export').addEventListener('click', () => {
       if (!job) return;
-      const text = exportText(job);
+      const format = field('format').value === 'code' ? 'code' : 'magnet';
+      const text = exportText(job, format);
       if (!text) return;
       try {
         download(text, fileName(field('filename').value || job.title));
-        noticeKind = 'success'; notice = job.status === 'completed' ? '已导出 TXT，请查看浏览器下载文件夹。' : '已导出当前已有结果；任务尚未完成，可继续采集后再次导出。'; render();
+        noticeKind = 'success';
+        notice = format === 'magnet'
+          ? '已导出纯磁链 TXT（每行一条），可直接全选复制到 qBittorrent 或迅雷批量下载。'
+          : '已导出番号 + 磁链 TXT，请查看浏览器下载文件夹。';
+        if (job.status !== 'completed') notice += '任务尚未完成，可继续采集后再次导出。';
+        render();
       }
       catch (error) { noticeKind = 'error'; notice = '导出失败：' + error.message; render(); }
+    });
+    button('copy').addEventListener('click', async () => {
+      if (!job) return;
+      const text = exportText(job);
+      if (!text) return;
+      try {
+        await copy(text);
+        noticeKind = 'success';
+        notice = '已复制 ' + exportEntries(job).length + ' 条磁链，可直接粘贴到 qBittorrent 或迅雷批量下载。';
+        if (job.status !== 'completed') notice += '任务尚未完成，仅包含当前已有结果。';
+      } catch (error) { noticeKind = 'error'; notice = '复制失败：' + error.message; }
+      render();
     });
     try {
       let source = eligible ? currentSource : await storage.get(lastStorageKey(origin), null);
@@ -706,5 +749,5 @@
     return { host };
   }
 
-  return { sourceURL, magnetKey, selectMagnet, parseList, parseDetail, exportText, exportEntries, pageName, fileName, CollectorError, createJob, createRequester, Collector, mount, jobStorageKey, validateJob, isJavdbSite, latestAnnouncement, nextDomainCheck, syncLatestDomain, latestPageURL, rebaseJob, loadJob, saveJob, DOMAIN_STORAGE_KEY };
+  return { sourceURL, magnetKey, selectMagnet, parseList, parseDetail, exportText, exportEntries, copyText, pageName, fileName, CollectorError, createJob, createRequester, Collector, mount, jobStorageKey, validateJob, isJavdbSite, latestAnnouncement, nextDomainCheck, syncLatestDomain, latestPageURL, rebaseJob, loadJob, saveJob, DOMAIN_STORAGE_KEY };
 });
