@@ -39,6 +39,36 @@ test('copy failures keep the TXT export fallback visible',async()=>{
  button(ui,'copy').click();await until(()=>text(ui).includes('复制失败'));
  assert.match(text(ui),/剪贴板被拒绝.*导出 TXT/s);
 });
+test('qBittorrent settings test and push collected magnets with custom parameters',async()=>{
+ const qbtCalls=[];
+ const qbtRequest=async ({method,url,headers,data})=>{
+  qbtCalls.push({method,url,headers,data});
+  if(url.endsWith('/api/v2/app/version'))return {status:200,text:'v5.2.3'};
+  if(url.includes('/api/v2/torrents/info'))return {status:200,text:'[]'};
+  if(url.endsWith('/api/v2/torrents/add')){
+   const urls=new URLSearchParams(data).get('urls').split('\n');
+   return {status:200,text:JSON.stringify({success_count:urls.length,failure_count:0,pending_count:0,added_torrent_ids:urls.map(url=>url.match(/btih:([a-f\d]{40})/i)[1])})};
+  }
+  throw Error('Unexpected qBittorrent request '+url);
+ };
+ const d=dependencies({qbtRequest});const ui=await c.mount(d.options);const root=ui.host.shadowRoot;
+ root.querySelector('[data-field="qbt-url"]').value='http://qbt:8080';
+ root.querySelector('[data-field="qbt-key"]').value='qbt_test';
+ root.querySelector('[data-field="qbt-savepath"]').value='/downloads/JavDB';
+ root.querySelector('[data-field="qbt-category"]').value='JavDB';
+ button(ui,'start').click();await until(()=>text(ui).includes('采集完成'));
+ button(ui,'qbt-test').click();await until(()=>text(ui).includes('连接成功'));
+ assert.match(text(ui),/v5\.2\.3/);
+ button(ui,'push').click();await until(()=>text(ui).includes('推送完成'));
+ const add=qbtCalls.find(call=>call.url.endsWith('/api/v2/torrents/add'));
+ const form=new URLSearchParams(add.data);
+ assert.equal(add.headers.Authorization,'Bearer qbt_test');
+ assert.equal(form.get('savepath'),'/downloads/JavDB');
+ assert.equal(form.get('category'),'JavDB');
+ assert.equal(form.get('stopped'),'false');
+ assert.deepEqual(form.get('urls').split('\n'),['magnet:?xt=urn:btih:0000000000000000000000000000000000000001']);
+ assert.equal(d.data.get(c.QBT_STORAGE_KEY).apiKey,'qbt_test');
+});
 test('restored checkpoint can resume without requesting the completed list again',async()=>{
  const d=dependencies(),job=c.createJob(source,'Saved');job.nextPage=null;job.pages=[source];job.signatures=['a'];job.status='running';job.items=[{id:'a',url:origin+'/v/a',label:'A',status:'pending'}];
  d.data.set(c.jobStorageKey(source),job);const requests=[];d.options.request=async u=>{requests.push(u);return detail;};

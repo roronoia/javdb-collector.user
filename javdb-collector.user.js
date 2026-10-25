@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         JavDB 全分页磁链采集
 // @namespace    local.javdb.collector
-// @version      1.2.0
-// @description  当前列表全分页采集，每部优选一条磁链，支持断点续采、纯磁链批量导出与一键复制。
+// @version      1.3.0
+// @description  当前列表全分页采集，每部优选一条磁链，支持断点续采、批量导出、一键复制与 qBittorrent 推送。
 // @homepageURL  https://github.com/roronoia/javdb-collector.user
 // @supportURL   https://github.com/roronoia/javdb-collector.user/issues
 // @updateURL    https://raw.githubusercontent.com/roronoia/javdb-collector.user/main/javdb-collector.meta.js
@@ -16,6 +16,8 @@
 // @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @connect      *
 // ==/UserScript==
 
 (function (factory) {
@@ -29,6 +31,7 @@
   const DAY = 86400000;
   const DOMAIN_STORAGE_KEY = 'javdb-collector:v1:domains';
   const FAMILY_LAST_KEY = 'javdb-collector:v1:family-last';
+  const QBT_STORAGE_KEY = 'javdb-collector:v1:qbt';
   function isJavdbSite(value) {
     try {
       const url = new URL(value);
@@ -280,6 +283,163 @@
     try { copied = typeof doc.execCommand === 'function' && !!doc.execCommand('copy'); }
     finally { area.remove(); }
     if (!copied) throw Error('浏览器拒绝了剪贴板访问，请改用“导出 TXT”。');
+  }
+
+  class QbtError extends Error {
+    constructor(message, { status = 0 } = {}) {
+      super(message);
+      this.name = 'QbtError';
+      this.status = status;
+    }
+  }
+  const QBT_DEFAULTS = Object.freeze({ baseUrl: '', apiKey: '', savePath: '', category: '', tags: '', paused: false, skipExisting: true });
+
+  function normalizeQbtUrl(value) {
+    const raw = compact(value);
+    if (!raw) throw new QbtError('请填写 qBittorrent WebUI 地址。');
+    let url;
+    try { url = new URL(raw); } catch (_) { throw new QbtError('qBittorrent 地址格式不正确。'); }
+    if (!/^https?:$/.test(url.protocol)) throw new QbtError('qBittorrent 地址需以 http:// 或 https:// 开头。');
+    if (url.username || url.password) throw new QbtError('地址中不要包含用户名或密码。');
+    if (url.search || url.hash) throw new QbtError('地址中不要包含查询参数或片段。');
+    return url.origin + url.pathname.replace(/\/+$/, '').replace(/\/api\/v2$/i, '');
+  }
+
+  function gmQbtRequest({ method, url, headers, data, timeout = 20000 }) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') { reject(new QbtError('当前脚本管理器不支持 GM_xmlhttpRequest，无法推送 qBittorrent。')); return; }
+      GM_xmlhttpRequest({
+        method, url, headers, data, timeout,
+        onload: response => resolve({ status: response.status, text: response.responseText || '' }),
+        onerror: () => reject(new QbtError('无法连接 qBittorrent，请检查地址、端口和网络。')),
+        ontimeout: () => reject(new QbtError('连接 qBittorrent 超时。')),
+        onabort: () => reject(new QbtError('qBittorrent 请求已取消。'))
+      });
+    });
+  }
+
+  function createQbtClient({ base, apiKey, request = gmQbtRequest, timeout = 20000 }) {
+    const root = normalizeQbtUrl(base);
+    const key = compact(apiKey);
+    if (!key) throw new QbtError('请填写 qBittorrent API Key。');
+    const call = async (method, path, { data, timeout: callTimeout } = {}) => {
+      const headers = { Authorization: 'Bearer ' + key };
+      if (data !== undefined) headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      let response;
+      try {
+        response = await request({ method, url: root + '/api/v2' + path, headers, data, timeout: callTimeout || timeout });
+      } catch (error) {
+        if (error instanceof QbtError) throw error;
+        throw new QbtError('无法连接 qBittorrent：' + String(error.message || error));
+      }
+      if (response.status === 401 || response.status === 403) throw new QbtError('qBittorrent 拒绝访问（HTTP ' + response.status + '），请检查 API Key 和 WebUI 地址。', { status: response.status });
+      return response;
+    };
+    const fail = (response, action) => {
+      const detail = String(response.text || '').trim().slice(0, 200);
+      if (response.status === 404) throw new QbtError(action + '失败（HTTP 404）：接口不存在，请检查地址是否包含反向代理子路径。', { status: 404 });
+      throw new QbtError(action + '失败（HTTP ' + response.status + '）' + (detail ? '：' + detail : ''), { status: response.status });
+    };
+    return {
+      root,
+      async version() {
+        const response = await call('GET', '/app/version');
+        if (response.status < 200 || response.status >= 300) fail(response, '读取版本');
+        return compact(response.text) || '未知版本';
+      },
+      async existingHashes(hashes) {
+        const unique = [...new Set(hashes.map(hash => String(hash).toLowerCase()).filter(Boolean))];
+        if (!unique.length) return new Set();
+        const response = await call('GET', '/torrents/info?hashes=' + encodeURIComponent(unique.join('|')));
+        if (response.status < 200 || response.status >= 300) fail(response, '检查已有任务');
+        let list;
+        try { list = JSON.parse(String(response.text || '').trim()); } catch (_) { throw new QbtError('qBittorrent 返回的任务列表不是有效 JSON。'); }
+        if (!Array.isArray(list)) throw new QbtError('qBittorrent 返回的任务列表格式不正确。');
+        return new Set(list.map(item => String(item.hash || '').toLowerCase()).filter(Boolean));
+      },
+      async add(urls, options = {}) {
+        const form = new URLSearchParams();
+        form.set('urls', urls.join('\n'));
+        if (options.savePath) { form.set('savepath', options.savePath); form.set('autoTMM', 'false'); }
+        if (options.category) form.set('category', options.category);
+        if (options.tags) form.set('tags', options.tags);
+        const paused = !!options.paused;
+        // 5.x reads "stopped"; 4.x reads "paused". Each version ignores the other key.
+        form.set('stopped', String(paused));
+        form.set('paused', String(paused));
+        const response = await call('POST', '/torrents/add', { data: form.toString(), timeout: 60000 });
+        if (response.status === 409) return { success: 0, failure: urls.length, pending: 0, ids: [], conflict: true };
+        if (response.status < 200 || response.status >= 300) fail(response, '添加任务');
+        const text = String(response.text || '').trim();
+        if (/^ok\.?$/i.test(text)) return { success: urls.length, failure: 0, pending: 0, ids: [], conflict: false };
+        let data;
+        try { data = JSON.parse(text); } catch (_) { throw new QbtError('qBittorrent 返回了无法识别的结果：' + text.slice(0, 160)); }
+        if (!data || typeof data !== 'object') throw new QbtError('qBittorrent 返回了无法识别的结果。');
+        return {
+          success: Number(data.success_count) || 0,
+          failure: Number(data.failure_count) || 0,
+          pending: Number(data.pending_count) || 0,
+          ids: Array.isArray(data.added_torrent_ids) ? data.added_torrent_ids.map(String) : [],
+          conflict: false
+        };
+      }
+    };
+  }
+
+  async function pushMagnets({ client, urls, savePath = '', category = '', tags = '', paused = false, skipExisting = true, chunkSize = 50, onProgress = () => {} }) {
+    const unique = [], failures = [], seen = new Set();
+    for (const raw of urls) {
+      const key = magnetKey(raw);
+      if (!key) { failures.push({ url: '', error: '不是有效的磁链：' + String(raw || '').slice(0, 120) }); continue; }
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push({ url: String(raw).trim(), key });
+    }
+    const summary = { requested: urls.length, unique: unique.length, added: 0, skipped: 0, failed: failures.length, failures };
+    if (!unique.length) return summary;
+    let pending = unique;
+    if (skipExisting) {
+      const existing = new Set();
+      for (let index = 0; index < unique.length; index += chunkSize) {
+        const chunk = unique.slice(index, index + chunkSize);
+        const hashes = chunk.map(item => item.key.startsWith('btih:') ? item.key.slice(5) : '').filter(Boolean);
+        if (hashes.length) {
+          const found = await client.existingHashes(hashes);
+          for (const hash of found) existing.add(hash);
+        }
+        onProgress({ phase: 'checking', done: Math.min(index + chunkSize, unique.length), total: unique.length, added: 0, skipped: 0, failed: failures.length });
+      }
+      pending = unique.filter(item => !(item.key.startsWith('btih:') && existing.has(item.key.slice(5))));
+      summary.skipped = unique.length - pending.length;
+    }
+    for (let index = 0; index < pending.length; index += chunkSize) {
+      const chunk = pending.slice(index, index + chunkSize);
+      try {
+        const result = await client.add(chunk.map(item => item.url), { savePath, category, tags, paused });
+        if (result.conflict) {
+          summary.skipped += chunk.length;
+        } else {
+          const ids = new Set((result.ids || []).map(id => String(id).toLowerCase()));
+          if (ids.size) {
+            for (const item of chunk) {
+              const hash = item.key.startsWith('btih:') ? item.key.slice(5) : '';
+              if (hash && ids.has(hash)) summary.added++;
+              else failures.push({ url: item.url, error: 'qBittorrent 未确认添加（可能已存在或磁链无效）' });
+            }
+          } else {
+            summary.added += Math.min(result.success, chunk.length);
+            const failed = Math.max(0, chunk.length - result.success);
+            for (let count = 0; count < failed; count++) failures.push({ url: '', error: 'qBittorrent 报告本批有任务添加失败' });
+          }
+        }
+      } catch (error) {
+        for (const item of chunk) failures.push({ url: item.url, error: String(error.message || error) });
+      }
+      summary.failed = failures.length;
+      onProgress({ phase: 'adding', done: Math.min(index + chunkSize, pending.length), total: pending.length, added: summary.added, skipped: summary.skipped, failed: summary.failed });
+    }
+    summary.failed = failures.length;
+    return summary;
   }
 
   function pageName(doc, value) {
@@ -551,6 +711,7 @@
         .state{font-weight:650}.error{color:#a3221d;background:#fff1f0;border-radius:7px;padding:8px;white-space:pre-wrap;overflow-wrap:anywhere}.error.success{color:#17613d;background:#eaf8ef}.error:empty{display:none}.counts{font-variant-numeric:tabular-nums;font-size:13px}label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}input,select{font:inherit;width:100%;min-height:40px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg);margin-bottom:10px}
         progress{display:block;width:100%;height:9px;margin:8px 0 12px;accent-color:var(--accent)}.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.primary{background:var(--accent);border-color:var(--accent);color:#fff}.primary:hover:enabled{background:#10438f;color:#fff}
         .wide{grid-column:1/-1}details{margin-top:12px;font-size:12px}summary{cursor:pointer;min-height:32px}ul{margin:4px 0;padding-left:20px;max-height:150px;overflow:auto}li{margin:6px 0;overflow-wrap:anywhere}a{color:var(--accent);overflow-wrap:anywhere}a[hidden],main[hidden]{display:none}.foot{margin:12px 0 0;font-size:12px;color:var(--muted)}
+        input[type="checkbox"]{width:auto;min-height:0;margin:0;padding:0;accent-color:var(--accent)}.check{display:flex;align-items:center;gap:7px;margin:7px 0;color:var(--fg);font-size:13px}.check input{margin:0}.qbt-status{font-size:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0}.qbt-status.bad{color:#a3221d}.qbt-failures{max-height:120px;overflow:auto;font-size:12px}
         @media(prefers-color-scheme:dark){.panel{--bg:#192232;--fg:#f0f4fb;--muted:#b7c5db;--line:#3d4c62;--accent:#91bbff}.primary{background:#2866bf;border-color:#2866bf;color:#fff}.error{background:#472525;color:#ffc3bb}.error.success{background:#1b3e2d;color:#b4f2cd}button:hover:enabled{background:#263c5b;color:#fff}}
         @media(max-width:440px){:host{right:10px;bottom:10px;width:calc(100vw - 20px)}main{max-height:65vh}}
       </style>
@@ -570,6 +731,28 @@
             <option value="magnet">每行一条磁链（qBittorrent / 迅雷批量下载）</option>
             <option value="code">番号 + 磁链（每行一条，便于核对）</option>
           </select>
+          <details data-field="qbt-settings">
+            <summary>qBittorrent 推送设置（5.2+，可选）</summary>
+            <p class="muted">API Key 在 qBittorrent 设置 → WebUI → API Key 生成；密钥只保存在本机油猴存储。</p>
+            <label for="qbt-url">WebUI 地址</label>
+            <input id="qbt-url" data-field="qbt-url" type="url" placeholder="http://192.168.1.10:8080" autocomplete="off">
+            <label for="qbt-key">API Key</label>
+            <input id="qbt-key" data-field="qbt-key" type="password" placeholder="qbt_..." autocomplete="off">
+            <label for="qbt-savepath">保存路径（留空使用 qBittorrent 默认路径）</label>
+            <input id="qbt-savepath" data-field="qbt-savepath" type="text" placeholder="/downloads/JavDB" autocomplete="off">
+            <label for="qbt-category">分类（留空不分类）</label>
+            <input id="qbt-category" data-field="qbt-category" type="text" placeholder="JavDB" autocomplete="off">
+            <label for="qbt-tags">标签（逗号分隔，留空不添加）</label>
+            <input id="qbt-tags" data-field="qbt-tags" type="text" placeholder="javdb" autocomplete="off">
+            <label class="check"><input type="checkbox" data-field="qbt-paused"> 添加后暂停，不自动下载</label>
+            <label class="check"><input type="checkbox" data-field="qbt-skip" checked> 跳过 qBittorrent 中已存在的任务</label>
+            <div class="actions">
+              <button type="button" data-action="qbt-test">测试连接</button>
+              <button type="button" data-action="qbt-save">保存设置</button>
+            </div>
+            <p class="qbt-status" data-field="qbt-status"></p>
+            <ul class="qbt-failures" data-field="qbt-failures"></ul>
+          </details>
           <div class="actions">
             <button type="button" data-action="start" class="primary">开始采集</button>
             <button type="button" data-action="pause" disabled>暂停</button>
@@ -577,6 +760,7 @@
             <button type="button" data-action="retry" disabled>重试失败项</button>
             <button type="button" data-action="export" class="wide" disabled>导出 TXT</button>
             <button type="button" data-action="copy" class="wide" disabled>复制磁链（可直接粘贴批量下载）</button>
+            <button type="button" data-action="push" class="wide" disabled>推送 qBittorrent</button>
           </div>
           <details><summary data-field="failure-summary">问题与失败项</summary><ul data-field="failures"></ul></details>
           <p class="foot">优先：高清＋中字 → 高清 → 中字 → 第一条。名称明确时以 1080P 为高清门槛，否则用站点标签。串行请求，间隔至少 2 秒。</p>
@@ -589,8 +773,92 @@
     const field = name => root.querySelector(`[data-field="${name}"]`);
     const button = name => root.querySelector(`[data-action="${name}"]`);
     let job = null, engine = null, busy = false, notice = '', noticeKind = 'error', ready = false, storageBroken = false;
+    let qbtConfig = { ...QBT_DEFAULTS }, qbtMessage = '', qbtBad = false, pushing = false, pushFailures = [];
     field('filename').value = currentTitle;
     const states = { idle: '待开始', running: '正在采集', paused: '已暂停', blocked: '已暂停，需要处理', partial: '部分完成，有失败项', completed: '采集完成' };
+    function readQbtSettings() {
+      return {
+        baseUrl: field('qbt-url').value.trim(),
+        apiKey: field('qbt-key').value.trim(),
+        savePath: field('qbt-savepath').value.trim(),
+        category: field('qbt-category').value.trim(),
+        tags: field('qbt-tags').value.trim(),
+        paused: !!field('qbt-paused').checked,
+        skipExisting: !!field('qbt-skip').checked
+      };
+    }
+    function fillQbtSettings() {
+      field('qbt-url').value = qbtConfig.baseUrl || '';
+      field('qbt-key').value = qbtConfig.apiKey || '';
+      field('qbt-savepath').value = qbtConfig.savePath || '';
+      field('qbt-category').value = qbtConfig.category || '';
+      field('qbt-tags').value = qbtConfig.tags || '';
+      field('qbt-paused').checked = !!qbtConfig.paused;
+      field('qbt-skip').checked = qbtConfig.skipExisting !== false;
+    }
+    async function saveQbtSettings(config = readQbtSettings()) {
+      qbtConfig = config;
+      try { await storage.set(QBT_STORAGE_KEY, config); return true; }
+      catch (error) { qbtMessage = '保存 qBittorrent 设置失败：' + (error.message || error); qbtBad = true; render(); return false; }
+    }
+    async function testQbt() {
+      if (pushing) return;
+      field('qbt-settings').open = true;
+      const config = readQbtSettings();
+      qbtMessage = '正在连接 qBittorrent…'; qbtBad = false; render();
+      try {
+        const client = createQbtClient({ base: config.baseUrl, apiKey: config.apiKey, request: options.qbtRequest || gmQbtRequest });
+        const version = await client.version();
+        if (!await saveQbtSettings(config)) return;
+        qbtMessage = '连接成功：qBittorrent ' + version;
+      } catch (error) { qbtMessage = '连接失败：' + String(error.message || error); qbtBad = true; }
+      render();
+    }
+    async function pushQbt() {
+      if (pushing || !job) return;
+      field('qbt-settings').open = true;
+      const config = readQbtSettings();
+      const entries = exportEntries(job);
+      if (!entries.length) { qbtMessage = '当前没有可推送的磁链。'; qbtBad = true; render(); return; }
+      let client;
+      try { client = createQbtClient({ base: config.baseUrl, apiKey: config.apiKey, request: options.qbtRequest || gmQbtRequest }); }
+      catch (error) { qbtMessage = '无法推送：' + String(error.message || error); qbtBad = true; render(); return; }
+      const destination = (config.savePath ? '保存到 ' + config.savePath : '使用 qBittorrent 默认路径') + '，' + (config.category ? '分类 ' + config.category : '不分类') + (config.paused ? '，添加后暂停' : '，自动开始下载');
+      if (!ask(`将 ${entries.length} 条磁链推送到 qBittorrent（${destination}）？`)) return;
+      pushing = true; pushFailures = []; qbtBad = false;
+      qbtMessage = `准备推送 ${entries.length} 条磁链…`;
+      render();
+      try {
+        if (!await saveQbtSettings(config)) return;
+        const summary = await pushMagnets({
+          client, urls: entries.map(entry => entry.url),
+          savePath: config.savePath, category: config.category, tags: config.tags,
+          paused: config.paused, skipExisting: config.skipExisting,
+          onProgress: progress => {
+            qbtMessage = progress.phase === 'checking'
+              ? `检查已存在：${progress.done}/${progress.total}…`
+              : `推送中：${progress.done}/${progress.total} · 成功 ${progress.added} · 跳过 ${progress.skipped} · 失败 ${progress.failed}`;
+            render();
+          }
+        });
+        const codeByUrl = new Map(entries.map(entry => [entry.url, entry.code]));
+        pushFailures = summary.failures.map(failure => ({ code: failure.url ? codeByUrl.get(failure.url) || '' : '', url: failure.url, error: failure.error }));
+        const parts = [`成功 ${summary.added} 条`];
+        if (summary.skipped) parts.push(`跳过 ${summary.skipped} 条`);
+        if (summary.failed) parts.push(`失败 ${summary.failed} 条`);
+        qbtMessage = `qBittorrent 推送完成：${parts.join('，')}。`;
+        qbtBad = summary.failed > 0;
+        noticeKind = qbtBad ? 'error' : 'success';
+        notice = qbtBad ? qbtMessage + ' 详情见推送设置。' : qbtMessage;
+      } catch (error) {
+        qbtMessage = '推送失败：' + String(error.message || error);
+        qbtBad = true;
+        noticeKind = 'error'; notice = qbtMessage;
+      } finally {
+        pushing = false;
+        render();
+      }
+    }
     function render() {
       const items = job?.items || [];
       const selected = items.filter(item => item.status === 'ok').length;
@@ -617,6 +885,22 @@
       button('export').disabled = unique === 0;
       button('export').textContent = job?.status === 'completed' ? '导出 TXT' : '导出已有结果 TXT（未完成）';
       button('copy').disabled = unique === 0;
+      const qbtReady = !!field('qbt-url').value.trim() && !!field('qbt-key').value.trim();
+      button('push').disabled = !ready || pushing || unique === 0 || !qbtReady;
+      button('push').textContent = pushing ? '正在推送 qBittorrent…' : '推送 qBittorrent';
+      button('push').title = qbtReady ? '把当前磁链推送到 qBittorrent' : '请先在“qBittorrent 推送设置”中填写 WebUI 地址和 API Key';
+      button('qbt-test').disabled = pushing;
+      button('qbt-save').disabled = pushing;
+      field('qbt-status').textContent = qbtMessage;
+      field('qbt-status').classList.toggle('bad', qbtBad);
+      const qbtFailures = field('qbt-failures');
+      qbtFailures.textContent = '';
+      for (const failure of pushFailures.slice(0, 50)) {
+        const li = doc.createElement('li');
+        li.textContent = (failure.code ? failure.code + '：' : '') + failure.error;
+        qbtFailures.appendChild(li);
+      }
+      if (pushFailures.length > 50) { const li = doc.createElement('li'); li.textContent = '仅展示前 50 条失败记录。'; qbtFailures.appendChild(li); }
       field('failure-summary').textContent = `问题与失败项（${failed.length}${job?.error ? '，任务已暂停' : ''}）`;
       const failures = field('failures');
       failures.textContent = '';
@@ -732,6 +1016,13 @@
       } catch (error) { noticeKind = 'error'; notice = '复制失败：' + error.message; }
       render();
     });
+    button('qbt-save').addEventListener('click', async () => {
+      field('qbt-settings').open = true;
+      if (await saveQbtSettings()) { qbtBad = false; qbtMessage = 'qBittorrent 设置已保存。'; render(); }
+    });
+    button('qbt-test').addEventListener('click', () => { void testQbt(); });
+    button('push').addEventListener('click', () => { void pushQbt(); });
+    for (const name of ['qbt-url', 'qbt-key']) field(name).addEventListener('input', () => render());
     try {
       let source = eligible ? currentSource : await storage.get(lastStorageKey(origin), null);
       if (!source && !eligible && isJavdbSite(loc.href)) {
@@ -743,11 +1034,15 @@
         if (stored) { job = validateJob(stored, source, origin); field('filename').value = job.title; }
       }
     } catch (error) { storageBroken = true; notice = '读取已保存任务失败：' + error.message; }
+    try {
+      const storedQbt = await storage.get(QBT_STORAGE_KEY, null);
+      if (storedQbt && typeof storedQbt === 'object') { qbtConfig = { ...QBT_DEFAULTS, ...storedQbt }; fillQbtSettings(); }
+    } catch (error) { qbtBad = true; qbtMessage = '读取 qBittorrent 设置失败：' + (error.message || error); }
     ready = true; render();
     void checkDomain(true);
     doc.addEventListener('visibilitychange', () => { if (doc.visibilityState === 'visible') void checkDomain(); });
     return { host };
   }
 
-  return { sourceURL, magnetKey, selectMagnet, parseList, parseDetail, exportText, exportEntries, copyText, pageName, fileName, CollectorError, createJob, createRequester, Collector, mount, jobStorageKey, validateJob, isJavdbSite, latestAnnouncement, nextDomainCheck, syncLatestDomain, latestPageURL, rebaseJob, loadJob, saveJob, DOMAIN_STORAGE_KEY };
+  return { sourceURL, magnetKey, selectMagnet, parseList, parseDetail, exportText, exportEntries, copyText, pageName, fileName, CollectorError, QbtError, normalizeQbtUrl, createQbtClient, pushMagnets, createJob, createRequester, Collector, mount, jobStorageKey, validateJob, isJavdbSite, latestAnnouncement, nextDomainCheck, syncLatestDomain, latestPageURL, rebaseJob, loadJob, saveJob, DOMAIN_STORAGE_KEY, QBT_STORAGE_KEY };
 });
